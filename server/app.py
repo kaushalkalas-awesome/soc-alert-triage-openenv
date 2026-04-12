@@ -30,9 +30,7 @@ except ImportError:
 try:
     from ..models import SocAlertAction, SocAlertObservation
     from .environment import SocAlertTriageEnvironment
-except ImportError as e:
-    if "relative import" not in str(e) and "no known parent package" not in str(e):
-        raise
+except ImportError:
     from models import SocAlertAction, SocAlertObservation
     from environment import SocAlertTriageEnvironment
 
