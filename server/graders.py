@@ -24,9 +24,9 @@ def grade_easy(action: Dict[str, str], truth: Dict[str, str]) -> float:
     """Task 1: verdict only."""
     verdict = _safe(action, "verdict")
     if verdict not in VALID_VERDICTS:
-        return 0.0
+        return 0.01
     if verdict == truth["expected_verdict"]:
-        return 1.0
+        return 0.99
         
     expected = truth["expected_verdict"]
     # Partial credit for "close" verdicts
@@ -35,7 +35,7 @@ def grade_easy(action: Dict[str, str], truth: Dict[str, str]) -> float:
     if expected == "NeedsMoreData" and verdict in {"TP", "FP"}:
         return 0.5
         
-    return 0.0
+    return 0.01
 
 
 def grade_medium(action: Dict[str, str], truth: Dict[str, str]) -> float:
@@ -49,7 +49,7 @@ def grade_medium(action: Dict[str, str], truth: Dict[str, str]) -> float:
     if severity in VALID_SEVERITIES and severity == truth["expected_severity"]:
         score += 0.35
 
-    return max(0.0, min(1.0, score))
+    return max(0.01, min(0.99, score))
 
 
 def grade_hard(action: Dict[str, str], truth: Dict[str, str]) -> float:
@@ -82,4 +82,4 @@ def grade_hard(action: Dict[str, str], truth: Dict[str, str]) -> float:
     if response in VALID_ACTIONS:
         score += 0.10
 
-    return max(0.0, min(1.0, score))
+    return max(0.01, min(0.99, score))
