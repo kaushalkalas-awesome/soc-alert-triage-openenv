@@ -35,8 +35,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/soc-alert-triage-openenv"
-Repository = "https://github.com/yourusername/soc-alert-triage-openenv"
+Homepage = "https://github.com/kaushalkalas-awesome/soc-alert-triage-openenv"
+Repository = "https://github.com/kaushalkalas-awesome/soc-alert-triage-openenv"
 
 [project.scripts]
 server = "soc_openenv.server.app:main"

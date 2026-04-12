@@ -1,12 +1,12 @@
 ---
 title: SOC Alert Triage OpenEnv
 emoji: 🛡️
-colorFrom: blue
-colorTo: indigo
+colorFrom: '#0052FF'
+colorTo: '#4B0082'
 sdk: docker
 pinned: false
 app_port: 7860
-base_path: /docs
+base_path: /
 tags:
   - openenv
 ---
