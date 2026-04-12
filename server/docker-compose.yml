@@ -6,8 +6,8 @@ version: '3.8'
 services:
   soc-openenv:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: server/Dockerfile
     container_name: soc_alert_triage_env
     ports:
       - "7860:7860"
