@@ -14,11 +14,14 @@ from pydantic import Field
 
 
 class SocAlertAction(Action):
-    """Agent's action in response to a SOC alert."""
+    """Agent's action in response to a SOC alert or a tool call."""
 
-    verdict: str = Field(..., description="TP, FP, Benign, or NeedsMoreData")
-    severity: str = Field(..., description="critical, high, medium, or low")
-    response_action: str = Field(..., description="block, isolate, escalate, or ignore")
+    verdict: Optional[str] = Field(default=None, description="TP, FP, Benign, or NeedsMoreData")
+    severity: Optional[str] = Field(default=None, description="critical, high, medium, or low")
+    response_action: Optional[str] = Field(default=None, description="block, isolate, escalate, or ignore")
+    
+    tool_name: Optional[str] = Field(default=None, description="Tool to execute (e.g., query_threat_intel, check_user_history, analyze_payload)")
+    tool_query: Optional[str] = Field(default=None, description="Argument for the tool")
 
 
 class SocAlertObservation(Observation):

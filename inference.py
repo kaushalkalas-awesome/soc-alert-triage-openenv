@@ -47,25 +47,38 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME")
 BENCHMARK = "soc_alert_triage"
 TEMPERATURE = 0.0
-MAX_TOKENS = 200
+MAX_TOKENS = 300
+MAX_RETRIES = 2  # Retry on invalid JSON before falling back
 
-# ── System prompt for the SOC analyst agent ──────────────────────────────────
+# ── System prompt with few-shot examples (Improvement #3 & #5 Tool Calling) ────
 SYSTEM_PROMPT = textwrap.dedent("""\
-    You are a SOC (Security Operations Center) analyst AI. You receive security
-    alerts and must triage them. For every alert, respond with ONLY a valid JSON
-    object containing exactly three fields:
+    You are an expert SOC (Security Operations Center) analyst. You receive
+    security alerts and must triage them based on the evidence provided.
 
-    {
-      "verdict": "<TP|FP|Benign|NeedsMoreData>",
-      "severity": "<critical|high|medium|low>",
-      "response_action": "<block|isolate|escalate|ignore>"
-    }
+    You have TWO options for your response:
+    
+    OPTION 1: GATHER INFORMATION (Tool Call)
+    If you need more information before deciding, you can call a tool. Return ONLY a JSON object with:
+    {"tool_name": "<query_threat_intel|check_user_history|analyze_payload>", "tool_query": "<argument>"}
+    
+    OPTION 2: FINAL DECISION
+    If you have enough information, make your final triage decision. Return ONLY a JSON object with:
+    {"verdict": "...", "severity": "...", "response_action": "..."}
 
-    Rules:
-    - verdict must be one of: TP, FP, Benign, NeedsMoreData
-    - severity must be one of: critical, high, medium, low
-    - response_action must be one of: block, isolate, escalate, ignore
-    - Output ONLY the JSON object, no explanation, no markdown fences.
+    Final Decision Field values:
+    - verdict: TP (True Positive), FP (False Positive), Benign, NeedsMoreData
+    - severity: critical, high, medium, low
+    - response_action: block, isolate, escalate, ignore
+
+    Decision guidelines:
+    - TP + critical + block: Active ransomware, kill chain, BEC wire fraud
+    - TP + high + isolate: Brute-force, phishing, credential theft, data exfil
+    - TP + medium + escalate: Ambiguous threats needing analyst review
+    - FP + low + ignore: Known maintenance schedules, authorized automation
+    - Benign + low + ignore: Normal business operations, CI/CD pipelines
+    - NeedsMoreData + medium + escalate: Suspicious but insufficient evidence
+
+    Note: You must NOT include explanation text, or markdown fences. Output plain JSON.
 """)
 
 
@@ -92,14 +105,18 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 
 # ── LLM interaction ─────────────────────────────────────────────────────────
-def build_user_prompt(observation) -> str:
-    """Build the user prompt from the alert observation."""
+def build_user_prompt(observation, feedback: str = "") -> str:
+    """Build the user prompt from the alert observation.
+
+    If feedback is provided (multi-step), include it so the LLM can
+    self-correct its previous answer.
+    """
     if hasattr(observation, "state"):
         state = observation.state
     else:
         state = observation.get("state", {})
 
-    return textwrap.dedent(f"""\
+    prompt = textwrap.dedent(f"""\
         Triage the following security alert:
 
         IP: {state.get('ip', 'N/A')}
@@ -108,56 +125,108 @@ def build_user_prompt(observation) -> str:
         Event Time: {state.get('event_time', 'N/A')}
         Threat Intelligence: {state.get('threat_intel', 'N/A')}
         Behavior Pattern: {state.get('behavior_pattern', 'N/A')}
-
-        Respond with ONLY a JSON object with verdict, severity, and response_action.
     """)
 
+    tool_history = state.get("tool_history", [])
+    if tool_history:
+        prompt += "\nTool History:\n" + "\n".join(tool_history) + "\n"
 
-def get_model_action(client: OpenAI, observation) -> Dict[str, str]:
+    if feedback:
+        prompt += f"\nFeedback from previous attempt: {feedback}\n"
+        prompt += "Please revise your assessment based on this feedback.\n"
+
+    prompt += "\nRespond with ONLY a JSON object (either a tool call or a final decision)."
+    return prompt
+
+
+def parse_llm_response(content: str) -> Dict[str, str]:
+    """Parse and validate the LLM JSON response.
+
+    Handles markdown fences, extra whitespace, and validates required fields.
+
+    Raises:
+        ValueError: If response cannot be parsed or is missing required fields.
     """
-    Call the LLM through the hackathon proxy to get a triage decision.
+    content = content.strip()
 
-    Falls back to a safe default if the LLM response cannot be parsed.
-    """
-    user_prompt = build_user_prompt(observation)
+    # Strip markdown fences: ```json ... ``` or ``` ... ```
+    if content.startswith("```"):
+        content = content.split("\n", 1)[-1]
+    if content.endswith("```"):
+        content = content.rsplit("```", 1)[0]
+    content = content.strip()
 
-    try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
-            stream=False,
-        )
+    action = json.loads(content)
 
-        content = (completion.choices[0].message.content or "").strip()
-
-        # Strip markdown fences if the model wraps in ```json ... ```
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1]
-        if content.endswith("```"):
-            content = content.rsplit("```", 1)[0]
-        content = content.strip()
-
-        action = json.loads(content)
-
-        # Validate required fields exist
-        required = {"verdict", "severity", "response_action"}
-        if not required.issubset(action.keys()):
-            raise ValueError(f"Missing fields: {required - action.keys()}")
-
+    if "tool_name" in action:
         return {
-            "verdict": str(action["verdict"]).strip(),
-            "severity": str(action["severity"]).strip(),
-            "response_action": str(action["response_action"]).strip(),
+            "tool_name": str(action["tool_name"]).strip(),
+            "tool_query": str(action.get("tool_query", "")).strip(),
         }
 
-    except Exception as exc:
-        print(f"[DEBUG] Model request/parse failed: {exc}", flush=True)
-        return {"verdict": "TP", "severity": "medium", "response_action": "escalate"}
+    required = {"verdict", "severity", "response_action"}
+    if not required.issubset(action.keys()):
+        raise ValueError(f"Missing fields: {required - action.keys()}")
+
+    return {
+        "verdict": str(action["verdict"]).strip(),
+        "severity": str(action["severity"]).strip(),
+        "response_action": str(action["response_action"]).strip(),
+    }
+
+
+def get_model_action(
+    client: OpenAI,
+    observation,
+    feedback: str = "",
+) -> Dict[str, str]:
+    """
+    Call the LLM to get a triage decision, with retry on parse failure.
+
+    If the first response has invalid JSON, retry with
+    the error message appended so the LLM can self-correct.
+    """
+    user_prompt = build_user_prompt(observation, feedback)
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+            # On retry, append the parse error so the LLM can fix it
+            if last_error:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Your previous response could not be parsed: {last_error}\n"
+                        "Please respond with ONLY a valid JSON object, no other text."
+                    ),
+                })
+
+            completion = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+            )
+
+            content = (completion.choices[0].message.content or "").strip()
+            return parse_llm_response(content)
+
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < MAX_RETRIES:
+                print(
+                    f"[DEBUG] Attempt {attempt}/{MAX_RETRIES} parse failed: {exc}, retrying...",
+                    flush=True,
+                )
+
+    # All retries exhausted — fall back to safe default
+    print(f"[DEBUG] All {MAX_RETRIES} attempts failed: {last_error}, using fallback", flush=True)
+    return {"verdict": "TP", "severity": "medium", "response_action": "escalate"}
 
 
 def _action_to_string(action: Dict[str, str]) -> str:
@@ -173,7 +242,7 @@ def main() -> None:
     Environment Variables Used:
     - API_BASE_URL: LLM API endpoint
     - MODEL_NAME: Model identifier for inference
-    - HF_TOKEN / API_KEY: Authentication token for API
+    - API_KEY: Authentication token for API
     """
     start = perf_counter()
 
@@ -193,29 +262,48 @@ def main() -> None:
         env = SocAlertTriageEnvironment()
         rewards: List[float] = []
         steps_taken = 0
+        success = False
+        avg_score = 0.0
 
         try:
             for episode in range(5):
-                obs = env.reset(task_name=task_name, seed=42 + episode)
+                # Using difficulty tuned seeds
+                # Offset by the hash of task_name ensuring unique entropy per task.
+                tuned_seed = episode + (abs(hash(task_name)) % 10000)
+                obs = env.reset(task_name=task_name, seed=tuned_seed)
+                done = False
+                feedback = ""
+                episode_reward = 0.0
 
-                # Call the LLM through the hackathon proxy
-                action = get_model_action(client, obs)
-                obs_next = env.step(action)
+                while not done:
+                    # Call the LLM (with feedback from previous step if any)
+                    action = get_model_action(client, obs, feedback=feedback)
+                    obs = env.step(action)
 
-                reward = getattr(obs_next, "reward", 0.0)
-                done = getattr(obs_next, "done", False)
-                error = None
+                    reward = getattr(obs, "reward", 0.0)
+                    done = getattr(obs, "done", False)
+                    error = None
 
-                rewards.append(reward)
-                steps_taken += 1
+                    episode_reward = reward
+                    steps_taken += 1
 
-                log_step(
-                    step=steps_taken,
-                    action=_action_to_string(action),
-                    reward=reward,
-                    done=done,
-                    error=error,
-                )
+                    log_step(
+                        step=steps_taken,
+                        action=_action_to_string(action),
+                        reward=reward,
+                        done=done,
+                        error=error,
+                    )
+
+                    # Extract feedback for next step (multi-step self-correction)
+                    if not done and hasattr(obs, "state"):
+                        obs_state = obs.state if isinstance(obs.state, dict) else {}
+                        feedback = obs_state.get("feedback", "")
+                        if not feedback:
+                            # Get feedback from observation if environment provides it
+                            feedback = getattr(obs, "feedback", "") or ""
+
+                rewards.append(episode_reward)
 
             avg_score = sum(rewards) / len(rewards) if rewards else 0.0
             avg_score = min(max(avg_score, 0.0), 1.0)
@@ -224,9 +312,9 @@ def main() -> None:
 
         finally:
             log_end(
-                success=success if 'success' in dir() or 'success' in locals() else False,
+                success=success,
                 steps=steps_taken,
-                score=avg_score if 'avg_score' in locals() else 0.0,
+                score=avg_score,
                 rewards=rewards,
             )
 

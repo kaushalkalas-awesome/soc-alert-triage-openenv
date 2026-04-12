@@ -25,7 +25,7 @@ except ImportError:
 
 from .graders import grade_easy, grade_hard, grade_medium
 from .models import SocAlertAction, SocAlertObservation, SocAlertState
-from .utils import AlertCase, build_case_bank, task_to_levels
+from .utils import AlertCase, TASK_MAX_STEPS, generate_case, task_to_levels
 
 
 class SocAlertTriageEnvironment(Environment):
@@ -37,6 +37,9 @@ class SocAlertTriageEnvironment(Environment):
     - Severity assignment
     - Response action selection
 
+    Supports multi-step episodes where the agent can refine its
+    triage decision across steps with progressive feedback.
+
     Inherits from openenv.core.env_server.Environment for framework integration.
     """
 
@@ -46,28 +49,33 @@ class SocAlertTriageEnvironment(Environment):
         """Initialize the environment."""
         self.task_name: str = "task_easy_verdict"
         self.rng: random.Random = random.Random(42)
-        self.case_bank: List[AlertCase] = build_case_bank()
         self.current_case: Optional[AlertCase] = None
         self.steps: int = 0
         self.max_steps: int = 1
         self.episode_id: Optional[str] = None
         self.allowed_levels: List[str] = []
+        self.last_reward: float = 0.0
+        self.last_feedback: str = ""
+        self.best_reward: float = 0.0
+        self.tool_logs: List[str] = []
 
     def _set_task(self, task_name: str = "task_easy_verdict") -> None:
-        """Set the task and update allowed difficulty levels."""
+        """Set the task and update allowed difficulty levels and max steps."""
         self.task_name = task_name
         self.allowed_levels = task_to_levels(task_name)
+        self.max_steps = TASK_MAX_STEPS.get(task_name, 1)
 
     def _sample_case(self) -> AlertCase:
-        """Sample a random alert case from the dataset."""
-        pool = [c for c in self.case_bank if c.task_level in self.allowed_levels]
-        if not pool:
-            raise RuntimeError("No dataset cases available for selected task")
-        return self.rng.choice(pool)
+        """Generate a random alert case procedurally."""
+        return generate_case(self.rng, self.allowed_levels)
 
-    def _observe(self, case: AlertCase) -> Dict[str, Any]:
-        """Convert an alert case to observation dict."""
-        return {
+    def _observe(self, case: AlertCase, include_feedback: bool = False) -> Dict[str, Any]:
+        """Convert an alert case to observation dict.
+
+        For multi-step episodes, intermediate steps include feedback
+        from the previous attempt so the agent can self-correct.
+        """
+        obs: Dict[str, Any] = {
             "alert_id": case.alert_id,
             "task_name": self.task_name,
             "state": {
@@ -77,37 +85,88 @@ class SocAlertTriageEnvironment(Environment):
                 "event_time": case.event_time,
                 "threat_intel": case.threat_intel,
                 "behavior_pattern": case.behavior_pattern,
+                "tool_history": self.tool_logs,
             },
             "expected_action_schema": {
                 "verdict": "TP|FP|Benign|NeedsMoreData",
                 "severity": "critical|high|medium|low",
                 "response_action": "block|isolate|escalate|ignore",
+                "tool_name": "query_threat_intel|check_user_history|analyze_payload",
             },
         }
+        if include_feedback and self.last_feedback:
+            obs["feedback"] = self.last_feedback
+            obs["previous_reward"] = self.last_reward
+            obs["step_number"] = self.steps
+            obs["steps_remaining"] = self.max_steps - self.steps
+        return obs
+
+    def _execute_tool(self, tool_name: str, tool_query: str) -> str:
+        """Mock tool execution for information gathering."""
+        truth = asdict(self.current_case) if self.current_case else {}
+        
+        if tool_name == "query_threat_intel":
+            return f"Intel for {tool_query}: {truth.get('threat_intel', 'Unknown')}"
+        elif tool_name == "check_user_history":
+            return f"History for {tool_query}: User profile matches observed activity: {truth.get('expected_verdict', 'Unknown') == 'Benign'}"
+        elif tool_name == "analyze_payload":
+            return f"Analysis on {tool_query}: Payload characteristic suggests: {truth.get('expected_severity', 'Unknown')} severity threat."
+            
+        return f"Tool {tool_name} is not recognized or failed to execute."
+
+    def _generate_feedback(self, action_dict: Dict[str, str], reward: float) -> str:
+        """Generate human-readable feedback for multi-step self-correction."""
+        if reward >= 1.0:
+            return "Perfect score — your triage is correct."
+
+        hints = []
+        truth = asdict(self.current_case) if self.current_case else {}
+
+        # Verdict feedback
+        if action_dict.get("verdict", "").lower() != truth.get("expected_verdict", "").lower():
+            hints.append(
+                f"Your verdict '{action_dict.get('verdict', '')}' may not be correct. "
+                "Re-examine the threat intelligence and behavior pattern."
+            )
+
+        # Severity feedback (for medium/hard tasks)
+        if self.task_name != "task_easy_verdict":
+            if action_dict.get("severity", "").lower() != truth.get("expected_severity", "").lower():
+                hints.append(
+                    f"Severity '{action_dict.get('severity', '')}' seems off. "
+                    "Consider the threat intel confidence level and impact scope."
+                )
+
+        # Response action feedback (for hard tasks)
+        if self.task_name == "task_hard_full_triage":
+            if action_dict.get("response_action", "").lower() != truth.get("expected_action", "").lower():
+                hints.append(
+                    f"Response action '{action_dict.get('response_action', '')}' could be improved. "
+                    "Match the action to the severity and urgency of the threat."
+                )
+
+        if not hints:
+            return f"Close but not perfect (reward: {reward:.2f}). Review your assessment."
+        return " | ".join(hints)
 
     def reset(
         self, seed: Optional[int] = None, episode_id: Optional[str] = None, **kwargs
     ) -> SocAlertObservation:
         """
         Reset environment and return initial observation.
-
-        Args:
-            seed: Random seed for reproducibility
-            episode_id: Optional episode identifier
-            **kwargs: May include task_name for setting the task
-
-        Returns:
-            SocAlertObservation: Initial observation for the episode
         """
         if seed is not None:
             self.rng = random.Random(seed)
 
-        # Set task from kwargs if provided
         task_name = kwargs.get("task_name", "task_easy_verdict")
         self._set_task(task_name)
 
         self.episode_id = episode_id or str(uuid.uuid4())
         self.steps = 0
+        self.last_reward = 0.0
+        self.last_feedback = ""
+        self.best_reward = 0.0
+        self.tool_logs = []
         self.current_case = self._sample_case()
 
         obs_dict = self._observe(self.current_case)
@@ -123,24 +182,38 @@ class SocAlertTriageEnvironment(Environment):
     ) -> SocAlertObservation:
         """
         Execute one environment step.
-
-        Args:
-            action: Agent's action (dict or SocAlertAction)
-            **kwargs: Additional parameters
-
-        Returns:
-            SocAlertObservation: Observation after step, with reward and done signal
         """
         if self.current_case is None:
             raise RuntimeError("Call reset() before step().")
 
-        # Handle both Pydantic model and dict inputs
         if isinstance(action, SocAlertAction):
-            action_dict = action.model_dump()
+            action_dict = action.model_dump(exclude_unset=True)
         else:
             action_dict = action
 
         self.steps += 1
+        
+        # Tool execution branch
+        tool_name = action_dict.get("tool_name")
+        if tool_name:
+            tool_query = action_dict.get("tool_query", "")
+            result = self._execute_tool(tool_name, tool_query)
+            self.tool_logs.append(f"Used {tool_name}({tool_query}) -> {result}")
+            
+            terminated = self.steps >= self.max_steps
+            obs_dict = self._observe(
+                self.current_case,
+                include_feedback=False,
+            )
+            return SocAlertObservation(
+                alert_id=obs_dict["alert_id"],
+                task_name=obs_dict["task_name"],
+                state=obs_dict["state"],
+                expected_action_schema=obs_dict["expected_action_schema"],
+                reward=float(self.best_reward),
+                done=terminated,
+            )
+
         truth = asdict(self.current_case)
 
         # Grade the action based on task
@@ -153,19 +226,32 @@ class SocAlertTriageEnvironment(Environment):
         else:
             raise ValueError(f"Unsupported task: {self.task_name}")
 
-        terminated = self.steps >= self.max_steps
+        self.best_reward = max(self.best_reward, reward)
+        self.last_reward = reward
 
-        obs_dict = self._observe(self.current_case)
-        obs = SocAlertObservation(
+        terminated = self.steps >= self.max_steps
+        is_perfect = reward >= 0.99  # Allow float precision tolerance
+
+        # Generate feedback for non-final, non-perfect steps
+        if not terminated and not is_perfect:
+            self.last_feedback = self._generate_feedback(action_dict, reward)
+        else:
+            self.last_feedback = ""
+
+        final_reward = self.best_reward if terminated else reward
+
+        obs_dict = self._observe(
+            self.current_case,
+            include_feedback=(not terminated and not is_perfect),
+        )
+        return SocAlertObservation(
             alert_id=obs_dict["alert_id"],
             task_name=obs_dict["task_name"],
             state=obs_dict["state"],
             expected_action_schema=obs_dict["expected_action_schema"],
-            reward=float(reward),
-            done=terminated,
+            reward=float(final_reward),
+            done=terminated or is_perfect,
         )
-
-        return obs
 
     @property
     def state(self) -> SocAlertState:

@@ -25,7 +25,17 @@ def grade_easy(action: Dict[str, str], truth: Dict[str, str]) -> float:
     verdict = _safe(action, "verdict")
     if verdict not in VALID_VERDICTS:
         return 0.0
-    return 1.0 if verdict == truth["expected_verdict"] else 0.0
+    if verdict == truth["expected_verdict"]:
+        return 1.0
+        
+    expected = truth["expected_verdict"]
+    # Partial credit for "close" verdicts
+    if expected == "TP" and verdict == "NeedsMoreData":
+        return 0.5
+    if expected == "NeedsMoreData" and verdict in {"TP", "FP"}:
+        return 0.5
+        
+    return 0.0
 
 
 def grade_medium(action: Dict[str, str], truth: Dict[str, str]) -> float:
