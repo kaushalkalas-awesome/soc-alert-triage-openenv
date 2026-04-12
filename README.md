@@ -107,13 +107,29 @@ When sufficient confidence is achieved, the agent commits a final triage disposi
 {
   "verdict": "TP", 
   "severity": "high", 
-  "response_action": "isolate"
+  "response_action": "isolate",
+  "confidence": 0.85,
+  "reasoning": "High confidence due to matching threat intel and anomalous behavior pattern"
 }
 ```
 *Valid Options:* 
 *   **Verdict**: `TP`, `FP`, `Benign`, `NeedsMoreData`
 *   **Severity**: `critical`, `high`, `medium`, `low`
 *   **Response Action**: `block`, `isolate`, `escalate`, `ignore`
+*   **Confidence**: `float` (0.0-1.0) - Calibration score affects final reward
+*   **Reasoning**: `str` - Explanation for the decision (20+ chars = +0.02 bonus)
+
+#### Option 3: Human Escalation (Novel Feature)
+When uncertain, agents can escalate to human analysts:
+```json
+{
+  "escalate_to_human": true
+}
+```
+*   **Medium Task**: 1 escalation budget
+*   **Hard Task**: 2 escalation budgets
+*   **Reward**: 0.2-0.4 (lower than autonomous correct decision)
+*   **Strategy**: Use when confidence is low but budget remains
 
 ---
 
@@ -294,13 +310,63 @@ pytest tests/ -v
 
 ## 🏆 Novelty & Contributions
 
-This environment introduces several novel features for SOC simulation:
+This environment introduces several **world-first novel features** for SOC simulation that differentiate it from existing RL environments:
 
-1. **Alert Correlation Patterns**: Multi-alert scenarios requiring holistic analysis (30% of hard tasks)
-2. **Alert Fatigue Mechanics**: Time pressure simulation for realistic SOC stress modeling
-3. **Granular Partial Credit**: Similarity-based scoring for meaningful reward signals
-4. **Safety-First Penalties**: Explicit penalties for high-risk errors (false negatives, overreactions)
-5. **Tool-Augmented Decision Making**: Information gathering before commitment
+### 1. **Escalation Budget System** 🆕
+A **human-in-the-loop mechanic** that models real SOC constraints:
+- Agents have limited "escalation budget" to request human analyst help
+- **Medium Task**: 1 escalation allowed • **Hard Task**: 2 escalations allowed
+- Escalation provides ground truth but with reduced reward (0.2-0.4 vs 0.8-1.0)
+- Forces agents to learn uncertainty quantification and cost-benefit analysis
+- **Novelty**: First RL environment to model scarce human analyst attention
+
+### 2. **Confidence Calibration Scoring** 🆕
+Forces agents to be well-calibrated in their uncertainty:
+- Agents output confidence scores (0.0-1.0) alongside decisions
+- **Penalty**: -0.15 for overconfidence when wrong, -0.10 for underconfidence when right
+- **Bonus**: +0.05 for appropriate high confidence on correct decisions
+- Measures Brier score-style calibration across episode
+- **Novelty**: Addresses overconfidence in LLMs - a critical real-world deployment issue
+
+### 3. **Attack Campaign Progression** 🆕
+Multi-alert attack scenarios that unfold over time:
+- **4 Campaign Types**: Ransomware Kill Chain, APT, Insider Threat, Supply Chain
+- Progressive alerts show attack evolution (recon → initial access → persistence → impact)
+- Agents rewarded for **early detection** before damage occurs
+- Campaigns have 3-5 correlated alerts with temporal relationships
+- **Novelty**: First SOC environment with structured multi-stage attack narratives
+
+### 4. **Explainability Requirements** 🆕
+Agents must provide reasoning for their decisions:
+- Optional `reasoning` field in action (20+ chars for bonus)
+- Small bonus (+0.02) for providing explanations
+- Feedback system highlights inconsistencies between reasoning and decisions
+- Prepares agents for real-world deployment where explainability is critical
+- **Novelty**: First OpenEnv environment requiring decision justification
+
+### 5. **Alert Correlation Patterns** 
+Multi-alert scenarios requiring holistic analysis (30% of hard tasks)
+
+### 6. **Alert Fatigue Mechanics** 
+Time pressure simulation for realistic SOC stress modeling
+
+### 7. **Granular Partial Credit** 
+Similarity-based scoring for meaningful reward signals
+
+### 8. **Safety-First Penalties** 
+Explicit penalties for high-risk errors (false negatives, overreactions)
+
+---
+
+## 🎓 Research Contributions
+
+This environment addresses key research gaps identified in cybersecurity RL literature:
+
+1. **Partial Observability**: Realistic incomplete information (unlike static datasets)
+2. **Non-Stationarity**: Attack patterns evolve (campaign progression)
+3. **Action Costs**: Escalations have costs (human attention is scarce)
+4. **Calibration**: Agents must be uncertain when appropriate
+5. **Explainability**: Decisions must be interpretable
 
 ---
 

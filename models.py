@@ -14,14 +14,23 @@ from pydantic import Field
 
 
 class SocAlertAction(Action):
-    """Agent's action in response to a SOC alert or a tool call."""
+    """Agent's action in response to a SOC alert or a tool call.
+    
+    NEW: Supports reasoning output for explainability and confidence scoring.
+    """
 
     verdict: Optional[str] = Field(default=None, description="TP, FP, Benign, or NeedsMoreData")
     severity: Optional[str] = Field(default=None, description="critical, high, medium, or low")
     response_action: Optional[str] = Field(default=None, description="block, isolate, escalate, or ignore")
     
+    # Tool calling
     tool_name: Optional[str] = Field(default=None, description="Tool to execute (e.g., query_threat_intel, check_user_history, analyze_payload)")
     tool_query: Optional[str] = Field(default=None, description="Argument for the tool")
+    
+    # NEW: Explainability and confidence features
+    reasoning: Optional[str] = Field(default=None, description="Agent's reasoning for the decision (explainability)")
+    confidence: Optional[float] = Field(default=None, description="Confidence score 0.0-1.0 (calibration)")
+    escalate_to_human: Optional[bool] = Field(default=None, description="Request human analyst escalation")
 
 
 class SocAlertObservation(Observation):
@@ -38,6 +47,9 @@ class SocAlertObservation(Observation):
     )
     reward: Optional[float] = Field(default=None, description="Reward signal")
     done: bool = Field(default=False, description="Episode termination signal")
+    
+    # NEW: Episode-level metadata
+    episode_info: Optional[dict[str, Any]] = Field(default=None, description="Episode progress: alert_number, total_alerts, escalation_budget_remaining")
 
 
 class SocAlertState(State):
@@ -47,3 +59,14 @@ class SocAlertState(State):
     steps: int = 0
     max_steps: int = 1
     current_case: Optional[dict[str, Any]] = None
+    
+    # NEW: Escalation budget tracking
+    escalation_budget: int = Field(default=0, description="Remaining escalations to human analysts")
+    escalation_used: int = Field(default=0, description="Number of escalations used this episode")
+    
+    # NEW: Confidence calibration tracking
+    confidence_history: list[float] = Field(default_factory=list, description="History of confidence scores")
+    accuracy_history: list[bool] = Field(default_factory=list, description="History of correctness")
+    
+    # NEW: Campaign tracking
+    campaign_progress: dict[str, Any] = Field(default_factory=dict, description="Progress through attack campaign")

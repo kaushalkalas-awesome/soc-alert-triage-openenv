@@ -50,25 +50,62 @@ TEMPERATURE = 0.0
 MAX_TOKENS = 300
 MAX_RETRIES = 2  # Retry on invalid JSON before falling back
 
-# ── System prompt with few-shot examples (Improvement #3 & #5 Tool Calling) ────
+# ── System prompt with creative features (Confidence, Reasoning, Escalation) ────
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are an expert SOC (Security Operations Center) analyst. You receive
     security alerts and must triage them based on the evidence provided.
 
-    You have TWO options for your response:
+    You have THREE options for your response:
     
     OPTION 1: GATHER INFORMATION (Tool Call)
     If you need more information before deciding, you can call a tool. Return ONLY a JSON object with:
     {"tool_name": "<query_threat_intel|check_user_history|analyze_payload>", "tool_query": "<argument>"}
     
-    OPTION 2: FINAL DECISION
+    OPTION 2: FINAL DECISION (Autonomous Triage)
     If you have enough information, make your final triage decision. Return ONLY a JSON object with:
-    {"verdict": "...", "severity": "...", "response_action": "..."}
+    {
+      "verdict": "...",
+      "severity": "...",
+      "response_action": "...",
+      "confidence": 0.0-1.0,
+      "reasoning": "brief explanation"
+    }
+
+    OPTION 3: ESCALATE TO HUMAN (Limited Budget)
+    If you are uncertain and have escalation budget remaining, escalate to human analysts:
+    {"escalate_to_human": true}
+    
+    IMPORTANT CREATIVE FEATURES:
+    
+    1. CONFIDENCE CALIBRATION (REQUIRED):
+       - Include "confidence": 0.0-1.0 in your decision
+       - You are PENALIZED for overconfidence when wrong (-0.15)
+       - You are PENALIZED for underconfidence when right (-0.10)
+       - Be well-calibrated: high confidence only when certain
+    
+    2. EXPLAINABILITY BONUS:
+       - Include "reasoning": "explanation of your decision" (20+ characters)
+       - Earn +0.02 bonus for providing reasoning
+       - Good reasoning should reference specific alert indicators
+    
+    3. ESCALATION BUDGET:
+       - Medium task: 1 escalation allowed
+       - Hard task: 2 escalations allowed  
+       - Escalation gives correct answer but lower reward (0.2-0.4 vs 0.8-1.0)
+       - Use escalation when confidence is low but budget remains
+       - Running out of budget causes -0.5 penalty
+    
+    4. ATTACK CAMPAIGNS (Hard Task):
+       - Some scenarios are multi-alert campaigns (ransomware, APT, insider threat)
+       - Early detection in campaign progression earns higher rewards
+       - Look for correlation hints between alerts
 
     Final Decision Field values:
     - verdict: TP (True Positive), FP (False Positive), Benign, NeedsMoreData
     - severity: critical, high, medium, low
     - response_action: block, isolate, escalate, ignore
+    - confidence: 0.0-1.0 (REQUIRED - affects reward calibration)
+    - reasoning: str (RECOMMENDED - 20+ chars for bonus)
 
     Decision guidelines:
     - TP + critical + block: Active ransomware, kill chain, BEC wire fraud

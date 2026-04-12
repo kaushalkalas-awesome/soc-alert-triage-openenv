@@ -191,3 +191,34 @@ def grade_hard(action: Dict[str, str], truth: Dict[str, str]) -> float:
         score += 0.10
     
     return max(0.01, min(0.99, score))
+
+
+def calculate_calibration_score(confidence_history: list[float], accuracy_history: list[bool]) -> float:
+    """Calculate confidence calibration score using Brier score concept.
+    
+    A well-calibrated agent should have confidence that matches its accuracy.
+    For example, when it says 80% confident, it should be correct 80% of the time.
+    
+    Returns a score between 0.0 (poorly calibrated) and 1.0 (perfectly calibrated).
+    """
+    if len(confidence_history) < 2:
+        return 0.5  # Neutral score for insufficient data
+    
+    # Calculate calibration error
+    calibration_errors = []
+    for conf, acc in zip(confidence_history, accuracy_history):
+        # Convert bool to float (1.0 for correct, 0.0 for incorrect)
+        acc_float = 1.0 if acc else 0.0
+        # Error is difference between confidence and actual outcome
+        error = abs(conf - acc_float)
+        calibration_errors.append(error)
+    
+    # Average calibration error
+    avg_error = sum(calibration_errors) / len(calibration_errors)
+    
+    # Convert to score (1.0 - normalized error)
+    # Perfect calibration = 0 error = score 1.0
+    # Worst calibration = 1.0 error = score 0.0
+    calibration_score = max(0.0, 1.0 - avg_error)
+    
+    return calibration_score
