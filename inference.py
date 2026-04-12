@@ -49,79 +49,56 @@ BENCHMARK = "soc_alert_triage"
 TEMPERATURE = 0.0
 MAX_TOKENS = 400  # Increased to accommodate reasoning
 MAX_RETRIES = 2  # Retry on invalid JSON before falling back
+MAX_TOOL_CALLS = 2  # CRITICAL: Limit tool calls to prevent infinite loops
 
 # ── System prompt with creative features (Confidence, Reasoning, Escalation) ────
 SYSTEM_PROMPT = textwrap.dedent("""\
-    You are an expert SOC (Security Operations Center) analyst. You receive
-    security alerts and must triage them based on the evidence provided.
+    You are an expert SOC (Security Operations Center) analyst. Your job is to triage security alerts and make decisions.
 
-    You have THREE options for your response:
+    CRITICAL RULES:
+    1. You ONLY get rewards for FINAL DECISIONS (verdict/severity/response_action)
+    2. Tool calls give NO rewards - they are only for gathering information
+    3. You have LIMITED STEPS - after max steps you get 0 reward if no decision made
+    4. You MUST make a final decision within 1-2 tool calls maximum
+    5. Default to making a decision with your best guess rather than infinite tool calls
+
+    YOU HAVE THREE OPTIONS:
     
-    OPTION 1: GATHER INFORMATION (Tool Call)
-    If you need more information before deciding, you can call a tool. Return ONLY a JSON object with:
+    OPTION 1: TOOL CALL (Use sparingly - max 2 times)
+    Call this ONLY if you need more information:
     {"tool_name": "<query_threat_intel|check_user_history|analyze_payload>", "tool_query": "<argument>"}
     
-    OPTION 2: FINAL DECISION (Autonomous Triage)
-    If you have enough information, make your final triage decision. Return ONLY a JSON object with:
+    OPTION 2: FINAL DECISION (RECOMMENDED - Use this to get rewards)
+    Make your triage decision and GET REWARD:
     {
-      "verdict": "...",
-      "severity": "...",
-      "response_action": "...",
+      "verdict": "TP|FP|Benign|NeedsMoreData",
+      "severity": "critical|high|medium|low", 
+      "response_action": "block|isolate|escalate|ignore",
       "confidence": 0.0-1.0,
-      "reasoning": "brief explanation of your decision"
+      "reasoning": "brief explanation"
     }
 
-    OPTION 3: ESCALATE TO HUMAN (Limited Budget)
-    If you are uncertain and have escalation budget remaining, escalate to human analysts:
+    OPTION 3: ESCALATE (When uncertain and budget available)
     {"escalate_to_human": true}
     
-    IMPORTANT CREATIVE FEATURES:
-    
-    1. CONFIDENCE CALIBRATION (REQUIRED):
-       - Include "confidence": 0.0-1.0 in your decision
-       - You are PENALIZED for overconfidence when wrong (-0.15)
-       - You are PENALIZED for underconfidence when right (-0.10)
-       - Be well-calibrated: high confidence only when certain
-       - Example: If evidence is clear (malware hash match), confidence = 0.9+
-       - Example: If evidence is ambiguous, confidence = 0.5-0.7
-    
-    2. EXPLAINABILITY BONUS:
-       - Include "reasoning": "explanation of your decision" (20+ characters)
-       - Earn +0.02 bonus for providing reasoning
-       - Good reasoning references specific alert indicators
-       - Example: "Confidence 0.92 because: known malware hash matches, unusual process behavior detected"
-    
-    3. ESCALATION BUDGET:
-       - Easy task: 0 escalations
-       - Medium task: 1 escalation allowed
-       - Hard task: 2 escalations allowed  
-       - Escalation gives correct answer but lower reward (0.2-0.4 vs 0.8-1.0)
-       - Use escalation when confidence is low (<0.6) but budget remains
-       - Running out of budget causes -0.5 penalty
-    
-    4. ATTACK CAMPAIGNS (Hard Task):
-       - Some scenarios are multi-alert campaigns (ransomware, APT, insider threat)
-       - Early detection in campaign progression earns higher rewards
-       - Look for correlation hints between alerts
-       - Campaign alerts are marked with [CORRELATED: CampaignName]
+    DECISION GUIDELINES (BE DECISIVE):
+    - Malware hash match, brute force, suspicious login -> TP + high/critical + block/isolate
+    - Maintenance, scheduled tasks, authorized activity -> FP/Benign + low + ignore
+    - Unclear but suspicious -> NeedsMoreData + medium + escalate
+    - When in doubt, make your best guess rather than more tool calls
 
-    Final Decision Field values:
-    - verdict: TP (True Positive), FP (False Positive), Benign, NeedsMoreData
-    - severity: critical, high, medium, low
-    - response_action: block, isolate, escalate, ignore
-    - confidence: 0.0-1.0 (REQUIRED - affects reward calibration)
-    - reasoning: str (RECOMMENDED - 20+ chars for +0.02 bonus)
-    - escalate_to_human: bool (use when uncertain)
+    CONFIDENCE CALIBRATION:
+    - Include "confidence": 0.0-1.0 in your decision
+    - High confidence (0.8+) when evidence is clear
+    - Low confidence (0.5-0.7) when uncertain
+    - You get penalized for being overconfident when wrong
 
-    Decision guidelines:
-    - TP + critical + block: Active ransomware, kill chain, BEC wire fraud
-    - TP + high + isolate: Brute-force, phishing, credential theft, data exfil
-    - TP + medium + escalate: Ambiguous threats needing analyst review
-    - FP + low + ignore: Known maintenance schedules, authorized automation
-    - Benign + low + ignore: Normal business operations, CI/CD pipelines
-    - NeedsMoreData + medium + escalate: Suspicious but insufficient evidence
+    EXPLAINABILITY:
+    - Include "reasoning": "explanation" (20+ chars) for +0.02 bonus
+    - Reference specific indicators from the alert
 
-    Note: You must NOT include explanation text, or markdown fences. Output plain JSON.
+    REMEMBER: Tool calls = NO REWARD. Final decision = REWARD. Be decisive!
+    Output ONLY valid JSON. No markdown, no extra text.
 """)
 
 
@@ -148,7 +125,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 
 # ── LLM interaction ─────────────────────────────────────────────────────────
-def build_user_prompt(observation, feedback: str = "", episode_info: Optional[Dict] = None) -> str:
+def build_user_prompt(observation, feedback: str = "", episode_info: Optional[Dict] = None, tool_calls_made: int = 0) -> str:
     """Build the user prompt from the alert observation.
 
     If feedback is provided (multi-step), include it so the LLM can
@@ -172,14 +149,6 @@ def build_user_prompt(observation, feedback: str = "", episode_info: Optional[Di
         Behavior Pattern: {state.get('behavior_pattern', 'N/A')}
     """)
 
-    # NEW: Include episode info (escalation budget, campaign progress)
-    if episode_info:
-        prompt += f"\nEpisode Progress: Alert {episode_info.get('alert_number', 1)} of {episode_info.get('total_alerts', 1)}\n"
-        budget_remaining = episode_info.get('escalation_budget_remaining', 0)
-        budget_total = episode_info.get('escalation_budget_total', 0)
-        if budget_total > 0:
-            prompt += f"Escalation Budget: {budget_remaining} of {budget_total} remaining\n"
-    
     # Include campaign context if present
     campaign_context = state.get("campaign_context")
     if campaign_context:
@@ -192,11 +161,18 @@ def build_user_prompt(observation, feedback: str = "", episode_info: Optional[Di
 
     tool_history = state.get("tool_history", [])
     if tool_history:
-        prompt += "\nTool History:\n" + "\n".join(tool_history) + "\n"
+        prompt += "\nTool History (you already called these):\n" + "\n".join(tool_history[-3:]) + "\n"
 
     if feedback:
         prompt += f"\nFeedback from previous attempt: {feedback}\n"
         prompt += "Please revise your assessment based on this feedback.\n"
+
+    # CRITICAL: Add reminder about tool call limit
+    remaining_tools = MAX_TOOL_CALLS - tool_calls_made
+    if remaining_tools > 0:
+        prompt += f"\n⚠️ IMPORTANT: You have used {tool_calls_made} tool calls. You have {remaining_tools} remaining. MAKE A FINAL DECISION NOW to get a reward!\n"
+    else:
+        prompt += f"\n⚠️ CRITICAL: You have used all {MAX_TOOL_CALLS} tool calls. YOU MUST MAKE A FINAL DECISION NOW with verdict/severity/response_action!\n"
 
     prompt += "\nRespond with ONLY a JSON object (tool call, final decision, or escalation)."
     return prompt
@@ -266,6 +242,7 @@ def get_model_action(
     observation,
     feedback: str = "",
     episode_info: Optional[Dict] = None,
+    tool_calls_made: int = 0,
 ) -> Dict[str, Any]:
     """
     Call the LLM to get a triage decision, with retry on parse failure.
@@ -273,7 +250,7 @@ def get_model_action(
     If the first response has invalid JSON, retry with
     the error message appended so the LLM can self-correct.
     """
-    user_prompt = build_user_prompt(observation, feedback, episode_info)
+    user_prompt = build_user_prompt(observation, feedback, episode_info, tool_calls_made)
     last_error = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -311,9 +288,15 @@ def get_model_action(
                     flush=True,
                 )
 
-    # All retries exhausted — fall back to safe default with escalation
-    print(f"[DEBUG] All {MAX_RETRIES} attempts failed: {last_error}, using fallback escalation", flush=True)
-    return {"escalate_to_human": True}
+    # All retries exhausted — fall back to safe default with final decision
+    print(f"[DEBUG] All {MAX_RETRIES} attempts failed: {last_error}, using fallback decision", flush=True)
+    return {
+        "verdict": "NeedsMoreData",
+        "severity": "medium",
+        "response_action": "escalate",
+        "confidence": 0.5,
+        "reasoning": "Fallback decision due to parsing errors",
+    }
 
 
 def _action_to_string(action: Dict[str, Any]) -> str:
@@ -362,6 +345,7 @@ def main() -> None:
                 done = False
                 feedback = ""
                 episode_reward = 0.0
+                tool_calls_made = 0  # CRITICAL: Track tool calls per episode
 
                 while not done:
                     # NEW: Extract episode_info for escalation budget display
@@ -372,8 +356,18 @@ def main() -> None:
                         if "episode_info" in state:
                             episode_info = state["episode_info"]
                     
+                    # CRITICAL: Force decision if max tool calls reached
+                    if tool_calls_made >= MAX_TOOL_CALLS:
+                        # Force a decision by not allowing more tool calls
+                        print(f"[DEBUG] Max tool calls ({MAX_TOOL_CALLS}) reached, forcing decision", flush=True)
+                    
                     # Call the LLM (with feedback and episode_info)
-                    action = get_model_action(client, obs, feedback=feedback, episode_info=episode_info)
+                    action = get_model_action(client, obs, feedback=feedback, episode_info=episode_info, tool_calls_made=tool_calls_made)
+                    
+                    # Track tool calls
+                    if "tool_name" in action:
+                        tool_calls_made += 1
+                    
                     obs = env.step(action)
 
                     reward = getattr(obs, "reward", 0.0)
