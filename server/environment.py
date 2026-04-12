@@ -210,15 +210,16 @@ class SocAlertTriageEnvironment(Environment):
         
         return 0.0
 
-    def _handle_escalation(self) -> Tuple[float, bool]:
+    def _handle_escalation(self) -> Tuple[float, bool, Dict[str, Any]]:
         """Handle escalation to human analyst.
         
         Returns:
-            (reward, done): Reward for escalation and whether episode ends
+            (reward, done, ground_truth): Reward for escalation, whether episode ends,
+                                          and ground truth for agent to learn from
         """
         if self.escalation_used >= self.escalation_budget:
             # No budget left - major penalty
-            return -0.5, True
+            return -0.5, True, {}
         
         self.escalation_used += 1
         
@@ -227,13 +228,22 @@ class SocAlertTriageEnvironment(Environment):
         truth = asdict(self.current_case) if self.current_case else {}
         expected_verdict = truth.get("expected_verdict", "")
         
+        # Build ground truth info for the agent to learn from
+        ground_truth = {
+            "verdict": truth.get("expected_verdict", ""),
+            "severity": truth.get("expected_severity", ""),
+            "response_action": truth.get("expected_action", ""),
+            "explanation": f"Human analyst determined this is a {truth.get('expected_verdict', '')} "
+                          f"with {truth.get('expected_severity', '')} severity.",
+        }
+        
         # Reward based on appropriateness of escalation
         if expected_verdict in ["NeedsMoreData", "TP"]:
             # Good escalation - ambiguous or true threat
-            return 0.4, True
+            return 0.4, True, ground_truth
         else:
             # Unnecessary escalation - could have handled autonomously
-            return 0.2, True
+            return 0.2, True, ground_truth
 
     def _generate_feedback(self, action_dict: Dict[str, str], reward: float, 
                           confidence: Optional[float] = None, 
@@ -347,11 +357,21 @@ class SocAlertTriageEnvironment(Environment):
         
         # NEW: Handle escalation action
         if action_dict.get("escalate_to_human"):
-            reward, done = self._handle_escalation()
+            reward, done, ground_truth = self._handle_escalation()
             self.best_reward = max(self.best_reward, reward)
             self.last_reward = reward
             
             obs_dict = self._observe(self.current_case)
+            
+            # FIXED: Expose ground truth in observation for agent to learn
+            if ground_truth:
+                obs_dict["state"]["escalation_result"] = ground_truth
+                obs_dict["feedback"] = (
+                    f"ESCALATION RESULT: Human analyst confirmed this is "
+                    f"{ground_truth['verdict']} with {ground_truth['severity']} severity. "
+                    f"Recommended action: {ground_truth['response_action']}."
+                )
+            
             return SocAlertObservation(
                 alert_id=obs_dict["alert_id"],
                 task_name=obs_dict["task_name"],
@@ -438,8 +458,23 @@ class SocAlertTriageEnvironment(Environment):
             include_feedback=(not terminated and not is_perfect),
         )
         
-        # Check if campaign continues
+        # Check if episode is done
         episode_done = terminated or is_perfect
+        
+        # FIXED: Campaign progression logic
+        # If in campaign mode and episode is done, check if there are more alerts
+        if episode_done and self.campaign_manager and self.campaign_manager.has_more_alerts():
+            # Campaign continues - move to next alert
+            self.alert_number += 1
+            self.current_case = self._sample_case()  # Gets next from campaign
+            self.steps = 0  # Reset steps for new alert
+            self.best_reward = 0.0
+            self.last_reward = 0.0
+            self.last_feedback = ""
+            episode_done = False  # Episode continues with next alert
+            
+            # Update observation for next alert
+            obs_dict = self._observe(self.current_case)
         
         return SocAlertObservation(
             alert_id=obs_dict["alert_id"],

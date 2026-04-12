@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 """
-Inference Script - SOC Alert Triage Environment
+Inference Script - SOC Alert Triage Environment (ENHANCED WITH CREATIVE FEATURES)
 ===================================
 MANDATORY
 - Before submitting, ensure the following variables are defined in your environment configuration:
@@ -31,7 +31,7 @@ import json
 import os
 import textwrap
 from time import perf_counter
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -47,7 +47,7 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME")
 BENCHMARK = "soc_alert_triage"
 TEMPERATURE = 0.0
-MAX_TOKENS = 300
+MAX_TOKENS = 400  # Increased to accommodate reasoning
 MAX_RETRIES = 2  # Retry on invalid JSON before falling back
 
 # ── System prompt with creative features (Confidence, Reasoning, Escalation) ────
@@ -68,7 +68,7 @@ SYSTEM_PROMPT = textwrap.dedent("""\
       "severity": "...",
       "response_action": "...",
       "confidence": 0.0-1.0,
-      "reasoning": "brief explanation"
+      "reasoning": "brief explanation of your decision"
     }
 
     OPTION 3: ESCALATE TO HUMAN (Limited Budget)
@@ -82,30 +82,36 @@ SYSTEM_PROMPT = textwrap.dedent("""\
        - You are PENALIZED for overconfidence when wrong (-0.15)
        - You are PENALIZED for underconfidence when right (-0.10)
        - Be well-calibrated: high confidence only when certain
+       - Example: If evidence is clear (malware hash match), confidence = 0.9+
+       - Example: If evidence is ambiguous, confidence = 0.5-0.7
     
     2. EXPLAINABILITY BONUS:
        - Include "reasoning": "explanation of your decision" (20+ characters)
        - Earn +0.02 bonus for providing reasoning
-       - Good reasoning should reference specific alert indicators
+       - Good reasoning references specific alert indicators
+       - Example: "Confidence 0.92 because: known malware hash matches, unusual process behavior detected"
     
     3. ESCALATION BUDGET:
+       - Easy task: 0 escalations
        - Medium task: 1 escalation allowed
        - Hard task: 2 escalations allowed  
        - Escalation gives correct answer but lower reward (0.2-0.4 vs 0.8-1.0)
-       - Use escalation when confidence is low but budget remains
+       - Use escalation when confidence is low (<0.6) but budget remains
        - Running out of budget causes -0.5 penalty
     
     4. ATTACK CAMPAIGNS (Hard Task):
        - Some scenarios are multi-alert campaigns (ransomware, APT, insider threat)
        - Early detection in campaign progression earns higher rewards
        - Look for correlation hints between alerts
+       - Campaign alerts are marked with [CORRELATED: CampaignName]
 
     Final Decision Field values:
     - verdict: TP (True Positive), FP (False Positive), Benign, NeedsMoreData
     - severity: critical, high, medium, low
     - response_action: block, isolate, escalate, ignore
     - confidence: 0.0-1.0 (REQUIRED - affects reward calibration)
-    - reasoning: str (RECOMMENDED - 20+ chars for bonus)
+    - reasoning: str (RECOMMENDED - 20+ chars for +0.02 bonus)
+    - escalate_to_human: bool (use when uncertain)
 
     Decision guidelines:
     - TP + critical + block: Active ransomware, kill chain, BEC wire fraud
@@ -142,11 +148,13 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 
 
 # ── LLM interaction ─────────────────────────────────────────────────────────
-def build_user_prompt(observation, feedback: str = "") -> str:
+def build_user_prompt(observation, feedback: str = "", episode_info: Optional[Dict] = None) -> str:
     """Build the user prompt from the alert observation.
 
     If feedback is provided (multi-step), include it so the LLM can
     self-correct its previous answer.
+    
+    NEW: Includes episode_info for escalation budget and campaign tracking.
     """
     if hasattr(observation, "state"):
         state = observation.state
@@ -164,6 +172,24 @@ def build_user_prompt(observation, feedback: str = "") -> str:
         Behavior Pattern: {state.get('behavior_pattern', 'N/A')}
     """)
 
+    # NEW: Include episode info (escalation budget, campaign progress)
+    if episode_info:
+        prompt += f"\nEpisode Progress: Alert {episode_info.get('alert_number', 1)} of {episode_info.get('total_alerts', 1)}\n"
+        budget_remaining = episode_info.get('escalation_budget_remaining', 0)
+        budget_total = episode_info.get('escalation_budget_total', 0)
+        if budget_total > 0:
+            prompt += f"Escalation Budget: {budget_remaining} of {budget_total} remaining\n"
+    
+    # Include campaign context if present
+    campaign_context = state.get("campaign_context")
+    if campaign_context:
+        prompt += f"\nCampaign Context: {campaign_context}\n"
+    
+    # Include time pressure warning if present
+    time_pressure = state.get("time_pressure_seconds")
+    if time_pressure:
+        prompt += f"\nTIME PRESSURE: Decision needed within {time_pressure} seconds\n"
+
     tool_history = state.get("tool_history", [])
     if tool_history:
         prompt += "\nTool History:\n" + "\n".join(tool_history) + "\n"
@@ -172,14 +198,15 @@ def build_user_prompt(observation, feedback: str = "") -> str:
         prompt += f"\nFeedback from previous attempt: {feedback}\n"
         prompt += "Please revise your assessment based on this feedback.\n"
 
-    prompt += "\nRespond with ONLY a JSON object (either a tool call or a final decision)."
+    prompt += "\nRespond with ONLY a JSON object (tool call, final decision, or escalation)."
     return prompt
 
 
-def parse_llm_response(content: str) -> Dict[str, str]:
+def parse_llm_response(content: str) -> Dict[str, Any]:
     """Parse and validate the LLM JSON response.
 
     Handles markdown fences, extra whitespace, and validates required fields.
+    NEW: Extracts confidence, reasoning, and escalate_to_human fields.
 
     Raises:
         ValueError: If response cannot be parsed or is missing required fields.
@@ -195,35 +222,58 @@ def parse_llm_response(content: str) -> Dict[str, str]:
 
     action = json.loads(content)
 
+    # NEW: Handle escalation
+    if action.get("escalate_to_human"):
+        return {
+            "escalate_to_human": True,
+        }
+
+    # Handle tool call
     if "tool_name" in action:
         return {
             "tool_name": str(action["tool_name"]).strip(),
             "tool_query": str(action.get("tool_query", "")).strip(),
         }
 
+    # Handle final decision - NEW: extract confidence and reasoning
     required = {"verdict", "severity", "response_action"}
     if not required.issubset(action.keys()):
         raise ValueError(f"Missing fields: {required - action.keys()}")
 
-    return {
+    result = {
         "verdict": str(action["verdict"]).strip(),
         "severity": str(action["severity"]).strip(),
         "response_action": str(action["response_action"]).strip(),
     }
+    
+    # NEW: Extract optional confidence and reasoning
+    confidence = action.get("confidence")
+    if confidence is not None:
+        try:
+            result["confidence"] = float(confidence)
+        except (ValueError, TypeError):
+            pass  # Ignore invalid confidence
+    
+    reasoning = action.get("reasoning")
+    if reasoning:
+        result["reasoning"] = str(reasoning).strip()
+    
+    return result
 
 
 def get_model_action(
     client: OpenAI,
     observation,
     feedback: str = "",
-) -> Dict[str, str]:
+    episode_info: Optional[Dict] = None,
+) -> Dict[str, Any]:
     """
     Call the LLM to get a triage decision, with retry on parse failure.
 
     If the first response has invalid JSON, retry with
     the error message appended so the LLM can self-correct.
     """
-    user_prompt = build_user_prompt(observation, feedback)
+    user_prompt = build_user_prompt(observation, feedback, episode_info)
     last_error = None
 
     for attempt in range(1, MAX_RETRIES + 1):
@@ -261,12 +311,12 @@ def get_model_action(
                     flush=True,
                 )
 
-    # All retries exhausted — fall back to safe default
-    print(f"[DEBUG] All {MAX_RETRIES} attempts failed: {last_error}, using fallback", flush=True)
-    return {"verdict": "TP", "severity": "medium", "response_action": "escalate"}
+    # All retries exhausted — fall back to safe default with escalation
+    print(f"[DEBUG] All {MAX_RETRIES} attempts failed: {last_error}, using fallback escalation", flush=True)
+    return {"escalate_to_human": True}
 
 
-def _action_to_string(action: Dict[str, str]) -> str:
+def _action_to_string(action: Dict[str, Any]) -> str:
     """Convert action dict to string representation."""
     return json.dumps(action, sort_keys=True)
 
@@ -304,17 +354,26 @@ def main() -> None:
 
         try:
             for episode in range(5):
-                # Using difficulty tuned seeds
-                # Offset by the hash of task_name ensuring unique entropy per task.
-                tuned_seed = episode + (abs(hash(task_name)) % 10000)
+                # FIXED: Use deterministic seed (not hash-dependent)
+                # Use episode number + task offset for reproducibility
+                task_offset = {"task_easy_verdict": 1000, "task_medium_verdict_severity": 2000, "task_hard_full_triage": 3000}
+                tuned_seed = episode + task_offset.get(task_name, 0)
                 obs = env.reset(task_name=task_name, seed=tuned_seed)
                 done = False
                 feedback = ""
                 episode_reward = 0.0
 
                 while not done:
-                    # Call the LLM (with feedback from previous step if any)
-                    action = get_model_action(client, obs, feedback=feedback)
+                    # NEW: Extract episode_info for escalation budget display
+                    episode_info = getattr(obs, "episode_info", None)
+                    if not episode_info and hasattr(obs, "state"):
+                        # Try to get from state if not directly available
+                        state = obs.state if isinstance(obs.state, dict) else {}
+                        if "episode_info" in state:
+                            episode_info = state["episode_info"]
+                    
+                    # Call the LLM (with feedback and episode_info)
+                    action = get_model_action(client, obs, feedback=feedback, episode_info=episode_info)
                     obs = env.step(action)
 
                     reward = getattr(obs, "reward", 0.0)
@@ -332,13 +391,13 @@ def main() -> None:
                         error=error,
                     )
 
-                    # Extract feedback for next step (multi-step self-correction)
-                    if not done and hasattr(obs, "state"):
-                        obs_state = obs.state if isinstance(obs.state, dict) else {}
-                        feedback = obs_state.get("feedback", "")
-                        if not feedback:
-                            # Get feedback from observation if environment provides it
-                            feedback = getattr(obs, "feedback", "") or ""
+                    # FIXED: Extract feedback properly from observation
+                    # Feedback can be at top level or in state
+                    if not done:
+                        feedback = getattr(obs, "feedback", "")
+                        if not feedback and hasattr(obs, "state"):
+                            state = obs.state if isinstance(obs.state, dict) else obs.state or {}
+                            feedback = state.get("feedback", "")
 
                 rewards.append(episode_reward)
 

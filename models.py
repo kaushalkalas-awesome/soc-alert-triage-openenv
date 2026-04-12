@@ -48,6 +48,9 @@ class SocAlertObservation(Observation):
     reward: Optional[float] = Field(default=None, description="Reward signal")
     done: bool = Field(default=False, description="Episode termination signal")
     
+    # NEW: Feedback for multi-step self-correction
+    feedback: Optional[str] = Field(default=None, description="Human-readable feedback for self-correction")
+    
     # NEW: Episode-level metadata
     episode_info: Optional[dict[str, Any]] = Field(default=None, description="Episode progress: alert_number, total_alerts, escalation_budget_remaining")
 
