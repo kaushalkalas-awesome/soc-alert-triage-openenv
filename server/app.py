@@ -16,8 +16,11 @@ import sys
 from pathlib import Path
 
 SERVER_DIR = Path(__file__).resolve().parent
+ROOT_DIR = SERVER_DIR.parent
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 try:
     from openenv.core.env_server.http_server import create_app
@@ -25,9 +28,11 @@ except ImportError:
     from openenv.core.env_server import create_app
 
 try:
-    from .models import SocAlertAction, SocAlertObservation
+    from ..models import SocAlertAction, SocAlertObservation
     from .environment import SocAlertTriageEnvironment
-except ImportError:
+except ImportError as e:
+    if "relative import" not in str(e) and "no known parent package" not in str(e):
+        raise
     from models import SocAlertAction, SocAlertObservation
     from environment import SocAlertTriageEnvironment
 
@@ -43,6 +48,12 @@ app = create_app(
     SocAlertObservation,
     env_name="soc_openenv",
 )
+
+from fastapi.responses import RedirectResponse
+@app.get("/", include_in_schema=False)
+def root_redirect():
+    """Redirect root to the OpenAPI Swagger dashboard."""
+    return RedirectResponse(url="/docs")
 
 
 def main(host: str = "0.0.0.0", port: int | None = None):

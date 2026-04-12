@@ -1,3 +1,16 @@
+---
+title: SOC Alert Triage OpenEnv
+emoji: 🛡️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+app_port: 7860
+base_path: /docs
+tags:
+  - openenv
+---
+
 # 🛡️ SOC Alert Triage OpenEnv
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)

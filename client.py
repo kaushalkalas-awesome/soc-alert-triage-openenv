@@ -30,7 +30,7 @@ import httpx
 try:
     from .models import SocAlertAction, SocAlertObservation
 except ImportError:
-    from server.models import SocAlertAction, SocAlertObservation
+    from models import SocAlertAction, SocAlertObservation
 
 ObsT = TypeVar("ObsT")
 

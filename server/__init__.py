@@ -6,7 +6,12 @@
 """SOC Alert Triage Environment Server Module."""
 
 from .environment import SocAlertTriageEnvironment
-from .models import SocAlertAction, SocAlertObservation, SocAlertState
+try:
+    from ..models import SocAlertAction, SocAlertObservation, SocAlertState
+except ImportError as e:
+    if "relative import" not in str(e) and "no known parent package" not in str(e):
+        raise
+    from models import SocAlertAction, SocAlertObservation, SocAlertState
 
 __all__ = [
     "SocAlertTriageEnvironment",

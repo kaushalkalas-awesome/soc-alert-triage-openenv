@@ -23,9 +23,19 @@ except ImportError:
     class Environment:
         pass
 
-from .graders import grade_easy, grade_hard, grade_medium
-from .models import SocAlertAction, SocAlertObservation, SocAlertState
-from .utils import AlertCase, TASK_MAX_STEPS, generate_case, task_to_levels
+try:
+    from .graders import grade_easy, grade_hard, grade_medium
+    from .utils import AlertCase, TASK_MAX_STEPS, generate_case, task_to_levels
+except ImportError:
+    from graders import grade_easy, grade_hard, grade_medium
+    from utils import AlertCase, TASK_MAX_STEPS, generate_case, task_to_levels
+
+try:
+    from ..models import SocAlertAction, SocAlertObservation, SocAlertState
+except ImportError as e:
+    if "relative import" not in str(e) and "no known parent package" not in str(e):
+        raise
+    from models import SocAlertAction, SocAlertObservation, SocAlertState
 
 
 class SocAlertTriageEnvironment(Environment):
@@ -47,6 +57,7 @@ class SocAlertTriageEnvironment(Environment):
 
     def __init__(self) -> None:
         """Initialize the environment."""
+        super().__init__()
         self.task_name: str = "task_easy_verdict"
         self.rng: random.Random = random.Random(42)
         self.current_case: Optional[AlertCase] = None
