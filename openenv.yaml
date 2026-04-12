@@ -1,0 +1,21 @@
+name: soc-alert-triage-openenv
+version: 0.1.0
+description: OpenEnv for SOC analyst style cybersecurity alert triage.
+entrypoint: server.environment:SocAlertTriageEnvironment
+client: server.client:SocAlertTriageEnv
+
+tasks:
+  - id: task_easy_verdict
+    description: Predict alert verdict only (single decision).
+    success_threshold: 0.85
+  - id: task_medium_verdict_severity
+    description: Predict verdict and severity (two decisions with partial credit).
+    success_threshold: 0.70
+  - id: task_hard_full_triage
+    description: Predict verdict, severity, and response action with safety penalties.
+    success_threshold: 0.75
+
+environment_variables:
+  - API_BASE_URL
+  - MODEL_NAME
+  - HF_TOKEN
