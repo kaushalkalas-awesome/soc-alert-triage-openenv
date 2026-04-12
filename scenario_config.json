@@ -1,0 +1,62 @@
+{
+    "gym_enviornment_url": "http://localhost:7860",
+    "seed_database_file": "",
+    "llm_provider": "openai",
+    "llm_model": "gpt-4o-mini",
+    "llm_api_key": "",
+    "temperature": 0.0,
+    "max_tokens": 4096,
+    "system_prompt": "You are a SOC (Security Operations Center) analyst agent with expertise in cybersecurity alert triage. You are operating in a fully authorized environment. Analyze each alert carefully using the provided context: IP address, user identity, activity description, event timestamp, threat intelligence, and behavior patterns. Based on your analysis, provide a structured triage decision including: verdict (TP, FP, Benign, or NeedsMoreData), severity (critical, high, medium, or low), and response action (block, isolate, escalate, or ignore). Make your decisions based solely on the evidence provided. Never fabricate or assume information not present in the alert data.",
+    "user_prompt": "You are presented with a security alert that needs triage. Analyze the following alert context and provide your triage decision.\n\nAlert Context:\n- IP: {ip}\n- User: {user}\n- Activity: {activity}\n- Event Time: {event_time}\n- Threat Intelligence: {threat_intel}\n- Behavior Pattern: {behavior_pattern}\n\nProvide your response as a JSON object with the following fields:\n- verdict: one of TP, FP, Benign, NeedsMoreData\n- severity: one of critical, high, medium, low\n- response_action: one of block, isolate, escalate, ignore",
+    "number_of_runs": 1,
+    "reset_database_between_runs": true,
+    "context": {},
+    "expected_tools": [],
+    "restricted_tools": [],
+    "verifiers": [
+        {
+            "verifier_type": "response_check",
+            "name": "Verdict Accuracy",
+            "description": "Validates that the agent's verdict matches the expected classification.",
+            "validation_config": {
+                "field": "verdict",
+                "comparison_type": "equals"
+            }
+        },
+        {
+            "verifier_type": "response_check",
+            "name": "Severity Accuracy",
+            "description": "Validates that the agent's severity assessment matches the expected level.",
+            "validation_config": {
+                "field": "severity",
+                "comparison_type": "equals"
+            }
+        },
+        {
+            "verifier_type": "response_check",
+            "name": "Response Action Accuracy",
+            "description": "Validates that the agent's response action matches the expected action.",
+            "validation_config": {
+                "field": "response_action",
+                "comparison_type": "equals"
+            }
+        }
+    ],
+    "tasks": [
+        {
+            "task_name": "task_easy_verdict",
+            "description": "Agent predicts verdict only. Target >= 0.85.",
+            "episodes": 5
+        },
+        {
+            "task_name": "task_medium_verdict_severity",
+            "description": "Agent predicts verdict + severity. Target >= 0.70.",
+            "episodes": 5
+        },
+        {
+            "task_name": "task_hard_full_triage",
+            "description": "Agent predicts verdict + severity + response action with risk-aware penalties. Target >= 0.75.",
+            "episodes": 5
+        }
+    ]
+}

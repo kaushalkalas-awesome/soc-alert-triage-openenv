@@ -1,3 +1,8 @@
+# Copyright (c) 2026. All rights reserved.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 """SOC Alert Triage Environment - Server-Side Game Logic.
 
 This is the environment implementation that runs on the server.

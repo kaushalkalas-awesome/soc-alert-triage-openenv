@@ -1,3 +1,8 @@
+# Copyright (c) 2026. All rights reserved.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
@@ -5,24 +10,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "soc-alert-triage-openenv"
 version = "0.1.0"
-description = "OpenEnv environment for SOC analyst style cybersecurity alert triage"
+description = "SOC Alert Triage environment for OpenEnv with cybersecurity alert classification"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-
 dependencies = [
-    "openai>=1.30.0",
-    "pydantic>=2.0.0",
-    "pyyaml>=6.0.1",
-    "fastapi>=0.111.0",
-    "uvicorn>=0.30.0",
     "openenv-core>=0.2.0",
+    "openenv>=0.1.13",
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    "httpx>=0.25.2",
+    "python-dotenv>=1.0.0",
+    "requests>=2.32.5",
+    "openai>=1.30.0",
+    "pyyaml>=6.0.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
 ]
 
 [project.urls]
@@ -30,10 +39,12 @@ Homepage = "https://github.com/yourusername/soc-alert-triage-openenv"
 Repository = "https://github.com/yourusername/soc-alert-triage-openenv"
 
 [project.scripts]
-server = "server.app:main"
+server = "soc_openenv.server.app:main"
 
 [tool.setuptools]
-packages = ["server"]
+include-package-data = true
+packages = ["soc_openenv", "soc_openenv.server"]
+package-dir = { "soc_openenv" = ".", "soc_openenv.server" = "server" }
 
 [tool.setuptools.package-data]
-server = ["py.typed"]
+soc_openenv = ["**/*.yaml", "**/*.yml", "**/*.md", "**/*.json"]

@@ -51,3 +51,5 @@ Thumbs.db
 
 # Misc
 *.log
+uv.lock
+response_output/

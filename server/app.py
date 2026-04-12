@@ -1,86 +1,58 @@
-"""FastAPI Application for SOC Alert Triage Environment.
+# Copyright (c) 2026. All rights reserved.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 
-This file creates the FastAPI app for serving the environment.
-It handles HTTP/WebSocket communication with the environment.
+"""
+FastAPI application entry point for the SOC Alert Triage environment.
+
+This module provides the standard server entry point used by OpenEnv tooling.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+import os
+import sys
+from pathlib import Path
 
-from .environment import SocAlertTriageEnvironment
-from .models import SocAlertAction, SocAlertObservation, SocAlertState
+SERVER_DIR = Path(__file__).resolve().parent
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
 
-# Create FastAPI app
-app = FastAPI(
-    title="SOC Alert Triage Environment",
-    description="OpenEnv-compatible SOC alert triage environment",
-    version="0.1.0",
+try:
+    from openenv.core.env_server.http_server import create_app
+except ImportError:
+    from openenv.core.env_server import create_app
+
+try:
+    from .models import SocAlertAction, SocAlertObservation
+    from .environment import SocAlertTriageEnvironment
+except ImportError:
+    from models import SocAlertAction, SocAlertObservation
+    from environment import SocAlertTriageEnvironment
+
+
+def create_soc_environment() -> SocAlertTriageEnvironment:
+    """Factory for per-session environment instances."""
+    return SocAlertTriageEnvironment()
+
+
+app = create_app(
+    create_soc_environment,
+    SocAlertAction,
+    SocAlertObservation,
+    env_name="soc_openenv",
 )
 
-# Global environment instance (for single-session local testing)
-# In production, use create_fastapi_app or implement proper session management
-env = SocAlertTriageEnvironment()
 
-@app.get("/")
-def root():
-    return {"message": "SOC Alert Triage OpenEnv is running"}
-
-@app.get("/health")
-def health() -> dict:
-    """Health check endpoint."""
-    return {"status": "ok"}
-
-
-@app.post("/reset")
-def reset_env(task_name: str = "task_easy_verdict") -> dict:
-    """Reset the environment."""
-    obs = env.reset(task_name=task_name)
-    return {
-        "observation": {
-            "alert_id": obs.alert_id,
-            "task_name": obs.task_name,
-            "state": obs.state,
-            "expected_action_schema": obs.expected_action_schema,
-        },
-        "reward": obs.reward,
-        "done": obs.done,
-    }
-
-
-@app.post("/step")
-def step_env(action: SocAlertAction) -> dict:
-    """Execute one step in the environment."""
-    obs = env.step(action)
-    return {
-        "observation": {
-            "alert_id": obs.alert_id,
-            "task_name": obs.task_name,
-            "state": obs.state,
-            "expected_action_schema": obs.expected_action_schema,
-        },
-        "reward": obs.reward,
-        "done": obs.done,
-    }
-
-
-@app.get("/state")
-def get_state() -> dict:
-    """Get current environment state."""
-    state_obj = env.state
-    return {
-        "task_name": state_obj.task_name,
-        "steps": state_obj.steps,
-        "max_steps": state_obj.max_steps,
-        "current_case": state_obj.current_case,
-    }
-
-
-def main():
-    """Run the FastAPI server."""
+def main(host: str = "0.0.0.0", port: int | None = None):
+    """Run the SOC Alert Triage environment server with uvicorn."""
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=7860)
+
+    if port is None:
+        port = int(os.getenv("API_PORT", "7860"))
+
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
