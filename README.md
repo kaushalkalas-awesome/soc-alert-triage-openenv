@@ -1,184 +1,189 @@
-# SOC Alert Triage OpenEnv
+# 🛡️ SOC Alert Triage OpenEnv
 
-An OpenEnv-style training environment where an AI agent learns to triage cybersecurity alerts like a SOC analyst.
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-brightgreen.svg)
+![OpenEnv Supported](https://img.shields.io/badge/OpenEnv-Supported-FF6F00)
+![Status: Beta](https://img.shields.io/badge/Status-Beta-orange)
 
-## 1) Environment Description
+**SOC Alert Triage OpenEnv** is a generic, interactive training and benchmarking environment built upon the OpenEnv framework. It is designed to evaluate Large Language Models (LLMs) and autonomous agents on their ability to perform complex, multi-step cybersecurity alert triage mirroring the workflows of human Security Operations Center (SOC) analysts.
 
-This environment simulates real SOC alert analysis workflows:
-- ingest an alert and context,
-- decide whether it is true or false positive,
-- assign severity,
-- choose the operational response.
+---
 
-### Real-world utility
-- SOC teams process high alert volume with limited analyst bandwidth.
-- Faster and safer triage reduces mean-time-to-respond (MTTR) and breach risk.
-- This setup trains and benchmarks alert triage decision quality.
+## 📖 Table of Contents
 
-## 2) Observation Space
+- [Overview & Capabilities](#-overview--capabilities)
+- [Environment Architecture](#-environment-architecture)
+  - [Observation Space](#observation-space)
+  - [Action Space & MCP Tool Calling](#action-space--mcp-tool-calling)
+  - [Task Tiers & Multi-Step Logic](#task-tiers--multi-step-logic)
+- [Grading Engine & Reward Function](#-grading-engine--reward-function)
+- [Installation & Quick Start](#-installation--quick-start)
+- [Hackathon Inference Runner](#-hackathon-inference-runner)
+- [OpenEnv Verification](#-openenv-verification)
 
-`reset()` returns an observation object:
-- `alert_id`
-- `task_name`
-- `state`:
-  - `ip`
-  - `user`
-  - `activity`
-  - `event_time`
-  - `threat_intel`
-  - `behavior_pattern`
-- `expected_action_schema`
+---
 
-## 3) Action Space
+## 🎯 Overview & Capabilities
 
-The agent submits a dictionary:
-- `verdict`: `TP | FP | Benign | NeedsMoreData`
-- `severity`: `critical | high | medium | low`
-- `response_action`: `block | isolate | escalate | ignore`
+Modern SOC teams process an overwhelming volume of security alerts with limited analyst bandwidth. The capability to accurately triage anomalies—minimizing Mean-Time-To-Respond (MTTR) while preventing catastrophic false negatives—is critical.
 
-## 4) Task Definitions (Exactly 3)
+This environment trains and benchmarks agents against those rigorous expectations using:
 
-1. `task_easy_verdict` (Easy, target >= 0.85)  
-   Agent predicts verdict only.
+*   **Procedural Alert Generation:** Alerts are dynamically synthesized across random IP addresses, user patterns, and temporal variations. Test data cannot be memorized.
+*   **Iterative Multi-Step Reasoning:** The environment fosters self-correction. Agents receive targeted feedback on incorrect deductions and are afforded multiple steps to refine their triage hypotheses.
+*   **Information Gathering (MCP Tools):** Rather than blindly guessing, agents can query synthetic Threat Intelligence, audit user history, or analyze payloads dynamically before rendering a final judgment.
 
-2. `task_medium_verdict_severity` (Medium, target >= 0.70)  
-   Agent predicts verdict + severity.
+---
 
-3. `task_hard_full_triage` (Hard, target >= 0.75)  
-   Agent predicts verdict + severity + response action with risk-aware penalties.
+## 🏗️ Environment Architecture
 
-## 5) Grader & Reward Design
+### Observation Space
 
-All graders are deterministic and return score in `[0, 1]`.
+Upon invoking `reset()` or iterating via `step()`, the environment yields an observation state representing the SIEM (Security Information and Event Management) console:
 
-- Easy: verdict correctness.
-- Medium: weighted partial credit:
-  - verdict `0.65`
-  - severity `0.35`
-- Hard: weighted partial credit + penalties:
-  - verdict `0.45`
-  - severity `0.25`
-  - response action `0.20`
-  - policy-valid action bonus `0.10`
-  - false-negative on critical threat penalty `-0.40`
-  - disruptive overreaction on benign/FP penalty `-0.20`
-
-## 6) OpenEnv Interface Compliance
-
-OpenEnv app manifest (`openenv.yaml`):
-
-- `spec_version: 1`
-- `type: space`
-- `runtime: fastapi`
-- `app: server.app:app`
-- `port: 7860`
-
-Environment class:
-
-- `server.environment:SocAlertTriageEnvironment`
-
-Client class:
-
-- `client:SocAlertTriageEnv`
-
-Server wiring follows OpenEnv's `create_app(...)` pattern used by official examples.
-
-## 7) Docker (Recommended)
-
-```bash
-cd soc_openenv
-docker build -t soc-openenv:latest .
-docker run --rm -p 7860:7860 soc-openenv:latest
-curl http://localhost:7860/health
+```json
+{
+  "alert_id": "A-7294",
+  "task_name": "task_hard_full_triage",
+  "state": {
+    "ip": "45.33.32.156",
+    "user": "research.lab",
+    "activity": "Cryptocurrency mining process detected on GPU cluster",
+    "event_time": "2026-04-08T12:00:00Z",
+    "threat_intel": "Mining pool address matches known cryptojacking infrastructure",
+    "behavior_pattern": "GPU utilization spiked to 100% outside experiment hours",
+    "tool_history": ["[Tool] check_user_history('research.lab') -> Profile matches...", "..."],
+    "feedback": "Severity 'low' seems off. Consider the threat intel confidence."
+  },
+  "expected_action_schema": { ... }
+}
 ```
 
-On Server health success response will be: `{"status":"healthy","service":"soc_openenv"}`
+*Note: `feedback` and `tool_history` manifest dynamically as the episode progresses.*
 
-## 8) Without Docker
+### Action Space & MCP Tool Calling
+
+The agent interacts via a structured JSON action dictionary. To support flexible workflows, the environment processes two distinct action variants seamlessly:
+
+#### Option 1: Tool Execution (Information Gathering)
+For environments lacking sufficient initial context, agents may invoke external checks:
+```json
+{
+  "tool_name": "query_threat_intel",
+  "tool_query": "45.33.32.156"
+}
+```
+*Supported Tools:* `query_threat_intel`, `check_user_history`, `analyze_payload`
+
+#### Option 2: Final Triage Decision
+When sufficient confidence is achieved, the agent commits a final triage disposition:
+```json
+{
+  "verdict": "TP", 
+  "severity": "high", 
+  "response_action": "isolate"
+}
+```
+*Valid Options:* 
+*   **Verdict**: `TP`, `FP`, `Benign`, `NeedsMoreData`
+*   **Severity**: `critical`, `high`, `medium`, `low`
+*   **Response Action**: `block`, `isolate`, `escalate`, `ignore`
+
+---
+
+### Task Tiers & Multi-Step Logic
+
+The evaluation suite encompasses three progressive difficulty tiers:
+
+1. **`task_easy_verdict` (Easy)**
+   * **Scope**: Formulate a basic `verdict` categorization.
+   * **Constraints**: 1 Step Maximum (No iteration).
+2. **`task_medium_verdict_severity` (Medium)**
+   * **Scope**: Asses both `verdict` and incident `severity`.
+   * **Constraints**: 2 Steps Maximum. Supports targeted feedback on the first failure.
+3. **`task_hard_full_triage` (Hard)**
+   * **Scope**: Comprehensive triage requiring `verdict`, `severity`, and strategic `response_action`.
+   * **Constraints**: 3 Steps Maximum. Risk-aware penalties are actively enforced.
+
+---
+
+## ⚖️ Grading Engine & Reward Function
+
+The deterministic grading engine returns normalized rewards (`[0.0, 1.0]`). Multi-step episodes operate on a "best-reward" strategy, actively incentivizing exploration and correction.
+
+| Criterion | Logic & Weighting |
+| :--- | :--- |
+| **Easy** | **1.00** Exact match |
+| | **0.50** Partial Credit *(e.g., `TP` mistaken for `NeedsMoreData`)* |
+| **Medium** | **0.65** `verdict` + **0.35** `severity` |
+| **Hard** | **0.45** `verdict` + **0.25** `severity` + **0.20** `action` <br> + **0.10** Syntax & Adherence Bonus |
+| **Penalties** | **-0.40** Missed Critical Incident *(False Negative)* <br> **-0.20** Disruptive Overreaction *(Blocking a Benign user)* |
+
+*Episodes terminate early automatically if an agent achieves a perfect `1.0`.*
+
+---
+
+## 🚀 Installation & Quick Start
+
+### 🐳 Option A: Using Docker (Recommended)
 
 ```bash
-cd soc_openenv
-python3 -m venv venv
-source venv/bin/activate
+# Clone the repository
+git clone <repository-url> && cd soc_openenv
+
+# Build and deploy the container
+docker build -t soc-openenv:latest .
+docker run --rm -p 7860:7860 soc-openenv:latest
+
+# Verify environment health
+curl http://localhost:7860/health
+# Expected: {"status":"healthy","service":"soc_openenv"}
+```
+
+### 💻 Option B: Local Python Environment
+
+```bash
+# Initialize and activate a virtual environment (Python 3.10+)
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Boot the OpenEnv ASGI server
 uvicorn server.app:app --host 0.0.0.0 --port 7860
 ```
 
-## 9) Quick Start (Demo)
+---
 
-For a quick demo, simply update `llm_api_key` in `scenario_config.json` and run:
+## 🤖 Hackathon Inference Runner
 
+The `inference.py` script serves as the primary benchmark execution runner and conforms entirely to the mandatory parsing and STDOUT logging requirements format required for automated grading.
+
+**Enterprise Readiness Features Built-in:**
+*   **Self-Healing JSON parsing:** Automatically catches and injects parse-failures as feedback context, allowing the LLM to instantly correct hallucinated formatting.
+*   **Quota Fallback Tolerance:** Proactively intercepts `HTTP 402/429` (Rate-Limit / Depleted Credits) errors and deploys a safe fallback action rather than crashing the testing suite. 
+
+### Configuration
 ```bash
-python client.py --scenario scenario_config.json
-```
-
-The existing config includes sample scenarios for all three difficulty tiers.
-
-### Configure Scenario
-
-To customize for your use case, edit `scenario_config.json` and update these fields:
-
-**LLM variables:**
-- `llm_api_key` - Your OpenAI/Anthropic/Google API key (or set via env var)
-- `llm_model` - Model name (e.g., `gpt-4o-mini`, `claude-3-5-sonnet-20241022`)
-- `llm_provider` - Provider: `openai`, `anthropic`, or `google`
-
-**Scenario variables:**
-- `system_prompt` - Instructions for agent behavior
-- `user_prompt` - Task template for the agent
-- `tasks` - List of task configurations with difficulty tiers
-- `verifiers` - Validation rules for task completion
-
-### Run Client
-
-Run scenario-based benchmark:
-
-```bash
-python client.py --scenario scenario_config.json
-```
-
-Output will be saved to `response_output/` folder with execution details and results.
-
-Interactive single-step mode:
-
-```bash
-python client.py --task task_easy_verdict --seed 42
-```
-
-## 10) Required Environment Variables
-
-- `API_BASE_URL` - LLM API endpoint
-- `MODEL_NAME` - Model identifier for inference
-- `HF_TOKEN` - Authentication token for API
-
-Example:
-
-```bash
-export API_BASE_URL="https://api.openai.com/v1"
+# Required Environment Variables
+export API_BASE_URL="https://api.openai.com/v1" # Or designated LiteLLM proxy
 export MODEL_NAME="gpt-4o-mini"
-export HF_TOKEN="your_token"
+export API_KEY="your-api-authorization-token"
 ```
 
-## 11) Baseline Inference
-
-`inference.py`:
-- initializes OpenAI client using required env vars,
-- runs 3 tasks over multiple episodes,
-- prints structured logs:
-  - `[START]`
-  - `[STEP]`
-  - `[END]`
-
+### Execution
 ```bash
-python inference.py
+python3 inference.py
 ```
 
-## 12) Hugging Face Space
+---
 
-1. Create Docker Space.
-2. Upload this project.
-3. Add secrets:
-   - `API_BASE_URL`
-   - `MODEL_NAME`
-   - `HF_TOKEN`
-4. Add tag: `openenv`.
+## 🔍 OpenEnv Verification
+
+This environment fully complies with the `OpenEnv` spec interface. 
+*   Manifest: `openenv.yaml` (`spec_version: 1`, `type: space`)
+*   Server Instance: `server.environment:SocAlertTriageEnvironment`
+*   Network Port: `:7860` 
+
+For optional manual verification or integration into an external harness, see the local `client.py` structure.
