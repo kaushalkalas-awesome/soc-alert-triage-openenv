@@ -78,7 +78,9 @@ class SocAlertTriageEnvironment(Environment):
 
     def _sample_case(self) -> AlertCase:
         """Generate a random alert case procedurally."""
-        return generate_case(self.rng, self.allowed_levels)
+        # Enable correlation mode for hard tasks (30% chance)
+        use_correlation = self.task_name == "task_hard_full_triage"
+        return generate_case(self.rng, self.allowed_levels, use_correlation=use_correlation)
 
     def _observe(self, case: AlertCase, include_feedback: bool = False) -> Dict[str, Any]:
         """Convert an alert case to observation dict.
@@ -105,6 +107,23 @@ class SocAlertTriageEnvironment(Environment):
                 "tool_name": "query_threat_intel|check_user_history|analyze_payload",
             },
         }
+        
+        # Include correlated alerts for hard task scenarios
+        if case.related_alerts:
+            obs["state"]["related_alerts"] = case.related_alerts
+            obs["state"]["correlation_context"] = (
+                "This alert is part of a correlated attack pattern. "
+                "Consider all related alerts when making your triage decision."
+            )
+        
+        # Include time pressure indicator for alert fatigue simulation
+        if case.time_pressure:
+            obs["state"]["time_pressure_seconds"] = case.time_pressure
+            obs["state"]["alert_fatigue_warning"] = (
+                f"HIGH PRIORITY: Time-sensitive alert. "
+                f"Recommend decision within {case.time_pressure} seconds."
+            )
+        
         if include_feedback and self.last_feedback:
             obs["feedback"] = self.last_feedback
             obs["previous_reward"] = self.last_reward
